@@ -658,56 +658,145 @@ class Model(nn.Module):
 
     @torch.no_grad()
     def topK_genrate(self, hidden_states, input_ids, head, logits_processor):
-        import pdb; pdb.set_trace() # TODO
+
+        '''
+        hidden_states: torch.Size([1, 46, 4096])
+
+        input_ids: size [1,47]
+        tensor([[    1,   319, 13563,  1546,   263, 12758,  1404,   322,   385, 23116,
+         21082, 20255, 29889,   450, 20255,  4076,  8444, 29892, 13173, 29892,
+           322,  1248,   568,  6089,   304,   278,  1404, 29915, 29879,  5155,
+         29889,  3148,  1001, 29901, 14350,   592,   263,   447, 18282,  1048,
+         18281,   319,  1799,  9047, 13566, 29901,  5879]], device='cuda:0')
+
+         head: Linear(in_features=4096, out_features=32000, bias=False)
+
+         logits_processor: [<transformers.generation.logits_process.TemperatureLogitsWarper object at 0x7f3236f86760>]
+        '''
+
+        '''
+        self.total_tokens = 59
+        self.depth = 5
+        self.top_k = 10
+        '''
+
         input_ids = input_ids.to(hidden_states.device)
+
         total_tokens = self.total_tokens
         depth = self.depth
         top_k = self.top_k
 
-        sample_token = input_ids[:, -1]
+        sample_token = input_ids[:, -1] # tensor([5879], device='cuda:0')
 
         scores_list = []
         parents_list = []
         ss_token = []
 
-        input_ids = input_ids[:, 1:]
+        input_ids = input_ids[:, 1:]    # why remove the first one? is it always 1?
         input_ids = input_ids.to(hidden_states.device)
 
-        len_posi = input_ids.shape[1]
-        self.reset()
+        len_posi = input_ids.shape[1] # len of positional encoding: 46
+        self.reset()    # set self.tree_mask to None
 
         # with Timer("draft many"):
-        if hasattr(self, "stable_kv") and self.stable_kv is not None:
+        if hasattr(self, "stable_kv") and self.stable_kv is not None:   # it is None
             kv_len = self.stable_kv[0][0].shape[2]
             out_hidden, past_key_values = self(hidden_states, input_ids=input_ids[:, kv_len:],
                                                past_key_values=self.stable_kv, use_cache=True)
         else:
             out_hidden, past_key_values = self(hidden_states, input_ids=input_ids, use_cache=True)
-        self.stable_kv = past_key_values
-        last_hidden = out_hidden[:, -1]
 
-        last_headout = head(last_hidden)
+        '''
+        out_hidden: torch.Size([1, 46, 4096])
+        tensor([[[ 0.7583,  0.9644, -0.8828,  ..., -1.0879,  0.3125,  0.4048],
+         [-0.7446,  1.1865, -0.6172,  ...,  0.4565,  0.1724,  0.3374],
+         [ 0.1758,  1.0264, -0.6216,  ..., -0.1965, -0.1055,  0.0962],
+         ...,
+         [ 0.8057, -1.2803, -0.6758,  ..., -0.5029,  1.0723, -0.3008],
+         [ 2.2363, -1.0801,  0.9922,  ..., -0.3413,  1.1299, -0.0312],
+         [ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813]]],
+       device='cuda:0', dtype=torch.float16)
+
+       past_key_values[0][0], past_key_values[0][1]: torch.Size([1, 32, 46, 128])
+       - past_key_values[1] DNE, past_key_values[0][2] DNE
+
+        '''
+        self.stable_kv = past_key_values
+        last_hidden = out_hidden[:, -1] # tensor([[ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813]], device='cuda:0', dtype=torch.float16)
+
+        last_headout = head(last_hidden)   # torch.Size([1, 32000])
 
         last_p = self.logsoftmax(last_headout)
         top = torch.topk(last_p, top_k, dim=-1)
+        '''top =
+        torch.return_types.topk(
+        values=tensor([[-2.3125, -3.1953, -3.4609, -3.5391, -3.6953, -3.8672, -3.9141, -3.9883,
+                -4.6602, -4.7422]], device='cuda:0', dtype=torch.float16),
+        indices=tensor([[ 6668, 18281,  1999, 10963,  1338,  1017,  5697, 11955,  3780, 14073]],
+            device='cuda:0'))
+       '''
         topk_index, topk_p = top.indices, top.values
-        scores = topk_p[0]
-        scores_list.append(scores[None])
-        parents_list.append(torch.zeros(1, dtype=torch.long, device=scores.device))
-        ss_token.append(topk_index)
+        scores = topk_p[0]  # tensor([-2.3125, -3.1953, -3.4609, -3.5391, -3.6953, -3.8672, -3.9141, -3.9883, -4.6602, -4.7422], device='cuda:0', dtype=torch.float16)
+        scores_list.append(scores[None])    # changes the shape for scores back to [1,10] instead of [10]
+        parents_list.append(torch.zeros(1, dtype=torch.long, device=scores.device)) # initialize parent list with a [0] tensor
+        ss_token.append(topk_index) 
+
         input_ids = topk_index
         input_hidden = last_hidden[None].repeat(1, top_k, 1)
         tree_mask = self.tree_mask_init
         topk_cs_index = torch.arange(top_k, device=self.embed_tokens.weight.device)
 
+        '''
+        input_ids: torch.Size([1, 10])
+        tensor([[ 6668, 18281,  1999, 10963,  1338,  1017,  5697, 11955,  3780, 14073]],
+        device='cuda:0')
+
+        input_hidden: torch.Size([1, 10, 4096])
+        tensor([[[ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813],
+         [ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813],
+         [ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813],
+         ...,
+         [ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813],
+         [ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813],
+         [ 0.2905, -0.5532, -0.4924,  ..., -0.0073,  0.5806, -0.3813]]],
+        device='cuda:0', dtype=torch.float16)
+
+        tree_mask: torch.Size([1, 1, 10, 10])
+        tensor([[[[1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+          [0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],
+          [0., 0., 1., 0., 0., 0., 0., 0., 0., 0.],
+          [0., 0., 0., 1., 0., 0., 0., 0., 0., 0.],
+          [0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
+          [0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+          [0., 0., 0., 0., 0., 0., 1., 0., 0., 0.],
+          [0., 0., 0., 0., 0., 0., 0., 1., 0., 0.],
+          [0., 0., 0., 0., 0., 0., 0., 0., 1., 0.],
+          [0., 0., 0., 0., 0., 0., 0., 0., 0., 1.]]]], device='cuda:0')
+
+        topk_cs_index:
+        tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], device='cuda:0')
+        '''
         # 4
         for i in range(depth):
             self.tree_mask = tree_mask
             position_ids = len_posi + self.position_ids
+            '''
+            i=0:
+                position_ids: tensor([46, 46, 46, 46, 46, 46, 46, 46, 46, 46], device='cuda:0')
+            i=1:
+                position_ids: tensor([47, 47, 47, 47, 47, 47, 47, 47, 47, 47], device='cuda:0')
+            '''
             # with Timer("draft one"):
             out_hidden, past_key_values = self(input_hidden, input_ids=input_ids, past_key_values=past_key_values,
-                                               position_ids=position_ids, use_cache=True)
-            len_posi += 1
+                                               position_ids=position_ids, use_cache=True)   # Passes through EAGLE model
+            '''
+            out_hidden: torch.Size([1, 10, 4096])
+            past_key_values[0][0].size():
+                i=0: torch.Size([1, 32, 56, 128])      - added 10 from initialization
+                i=1: torch.Size([1, 32, 66, 128])  
+            '''
+
+            len_posi += 1   # update the position that the next generated tokens are at
 
             # with Timer("sort1"):
             bias1 = top_k if i > 0 else 0
@@ -715,19 +804,33 @@ class Model(nn.Module):
             bias = 1 + top_k ** 2 * bias2 + bias1
             parents = (topk_cs_index + bias)
             parents_list.append(parents)
+            '''
+            i=0: 
+                bias1=0
+                bias2=0
+                bias=1
+                parents: tensor([ 1,  2,  3,  4,  5,  6,  7,  8,  9, 10], device='cuda:0')
+            i=1: 
+                bias1=10
+                bias2=0
+                bias=11
+                parents: tensor([11, 21, 71, 51, 41, 81, 31, 32, 12, 61], device='cuda:0')
+            '''
 
-            last_headout = head(out_hidden[0])
-            last_p = self.logsoftmax(last_headout)
+            last_headout = head(out_hidden[0])  # torch.Size([10, 32000])
+            last_p = self.logsoftmax(last_headout) # torch.Size([10, 32000])
 
-            top = torch.topk(last_p, top_k, dim=-1)
-            topk_index, topk_p = top.indices, top.values
+            top = torch.topk(last_p, top_k, dim=-1)  # Choose the top 10 for each of the 10 possible next tokens
+            topk_index, topk_p = top.indices, top.values #torch.Size([10, 10])
 
-            cu_scores = topk_p + scores[:, None]
+            cu_scores = topk_p + scores[:, None] # cumulative scores; add the scores of the descendent's parents
 
+            # Get the overall top k descendents from the current 10 nodes
             topk_cs = torch.topk(cu_scores.view(-1), top_k, dim=-1)
-            topk_cs_index, topk_cs_p = topk_cs.indices, topk_cs.values
-            scores = topk_cs_p
+            topk_cs_index, topk_cs_p = topk_cs.indices, topk_cs.values # torch.size([10])
+            scores = topk_cs_p  # scores are cumulative
 
+            # Get the feature inputs and token inputs for the next iteration
             out_ids = topk_cs_index // top_k
             input_hidden = out_hidden[:, out_ids]
             # with Timer("2index"):
@@ -740,6 +843,11 @@ class Model(nn.Module):
             ss_token.append(topk_index)
             scores_list.append(cu_scores)
             tree_mask = torch.cat((tree_mask[:, :, out_ids], self.tree_mask_init), dim=3)
+            '''
+            i=0: 
+                tree_mask: torch.Size([1, 1, 10, 20])
+
+            '''
 
             # if self.threshold < 0 and cu_scores.max() < self.threshold:
             #     break
@@ -748,6 +856,9 @@ class Model(nn.Module):
         # return draft_tokens, mask_index,tree_mask,tree_position_ids
 
         # with Timer("post"):
+        # TODO: here
+        import pdb; pdb.set_trace() # TODO
+
 
         scores_list = torch.cat(scores_list, dim=0).view(-1)
         ss_token_list = torch.cat(ss_token, dim=0).view(-1)
