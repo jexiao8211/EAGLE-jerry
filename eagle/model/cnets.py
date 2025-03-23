@@ -856,7 +856,7 @@ class Model(nn.Module):
         # return draft_tokens, mask_index,tree_mask,tree_position_ids
 
         # with Timer("post"):
-        # TODO: here
+        # TODO: get the final results from the draft tree construction above
         import pdb; pdb.set_trace() # TODO
 
 
